@@ -48,7 +48,8 @@ fn get_recording_state(state: State<AppState>) -> RecordingState {
 #[tauri::command]
 fn check_model_downloaded(state: State<AppState>, model_size: String) -> bool {
     let model_file = transcribe_local::model_filename(&model_size);
-    state.app_dir.join(&model_file).exists()
+    let model_path = state.app_dir.join(&model_file);
+    model_path.exists() && transcribe_local::validate_model_file(&model_size, &model_path).is_ok()
 }
 
 #[tauri::command]
@@ -168,35 +169,30 @@ fn main() {
 
                     match event.state {
                         ShortcutState::Pressed => {
-                            tauri::async_runtime::spawn(async move {
-                                let state = handle.state::<AppState>();
-                                match mode.as_str() {
-                                    "toggle" => {
+                            match mode.as_str() {
+                                "toggle" => {
+                                    tauri::async_runtime::spawn(async move {
+                                        let state = handle.state::<AppState>();
                                         println!("[Typr] Toggle mode: calling do_toggle_recording");
                                         match do_toggle_recording(&handle, state.inner()).await {
                                             Ok(result) => println!("[Typr] Toggle result: {}", result),
                                             Err(e) => eprintln!("[Typr] Toggle error: {}", e),
                                         }
-                                    }
-                                    "push-to-talk" => {
-                                        let current = state.recorder.get_state();
-                                        println!("[Typr] PTT mode, current state: {:?}", current);
-                                        if current == RecordingState::Ready {
-                                            let mic = state
-                                                .settings
-                                                .lock()
-                                                .unwrap()
-                                                .microphone
-                                                .clone();
-                                            match state.recorder.start_recording(&handle, &mic) {
-                                                Ok(_) => println!("[Typr] Recording started"),
-                                                Err(e) => eprintln!("[Typr] Start recording error: {}", e),
-                                            }
+                                    });
+                                }
+                                "push-to-talk" => {
+                                    let current = state.recorder.get_state();
+                                    println!("[Typr] PTT mode, current state: {:?}", current);
+                                    if current == RecordingState::Ready {
+                                        let mic = state.settings.lock().unwrap().microphone.clone();
+                                        match state.recorder.start_recording(&handle, &mic) {
+                                            Ok(_) => println!("[Typr] Recording started"),
+                                            Err(e) => eprintln!("[Typr] Start recording error: {}", e),
                                         }
                                     }
-                                    _ => {}
                                 }
-                            });
+                                _ => {}
+                            }
                         }
                         ShortcutState::Released => {
                             if mode == "push-to-talk" {

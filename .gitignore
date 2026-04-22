@@ -27,5 +27,7 @@ dist-ssr
 target/
 
 # App-specific
-src-tauri/binaries/
+src-tauri/binaries/*
+!src-tauri/binaries/
+!src-tauri/binaries/whisper-cpp-x86_64-pc-windows-msvc.exe
 whisper.cpp/

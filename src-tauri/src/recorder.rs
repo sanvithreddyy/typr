@@ -45,6 +45,12 @@ impl Recorder {
         self.state.lock().unwrap().clone()
     }
 
+    fn set_state(&self, app: &AppHandle, next: RecordingState) {
+        *self.state.lock().unwrap() = next.clone();
+        let _ = app.emit("recording-state", next.clone());
+        update_overlay(app, &next);
+    }
+
     pub fn start_recording(&self, app: &AppHandle, mic_name: &str) -> Result<(), String> {
         let mut state = self.state.lock().unwrap();
         if *state != RecordingState::Ready {
@@ -66,57 +72,48 @@ impl Recorder {
         settings: &Settings,
         app_dir: &PathBuf,
     ) -> Result<String, String> {
-        // Stop recording
         {
-            let mut state = self.state.lock().unwrap();
+            let state = self.state.lock().unwrap();
             if *state != RecordingState::Recording {
                 return Err("Not currently recording".to_string());
             }
-            *state = RecordingState::Transcribing;
-            let _ = app.emit("recording-state", RecordingState::Transcribing);
-            update_overlay(app, &RecordingState::Transcribing);
         }
+        self.set_state(app, RecordingState::Transcribing);
 
         let temp_path = app_dir.join("temp_recording.wav");
+        let result = async {
+            {
+                let mut recorder = self.audio_recorder.lock().unwrap();
+                recorder.stop_and_save(&temp_path)?;
+            }
 
-        // Save audio
-        {
-            let mut recorder = self.audio_recorder.lock().unwrap();
-            recorder.stop_and_save(&temp_path)?;
+            let raw_text = match settings.engine.as_str() {
+                "local" => {
+                    let model_path =
+                        app_dir.join(transcribe_local::model_filename(&settings.whisper_model));
+                    transcribe_local::transcribe_local(
+                        app,
+                        &settings.whisper_model,
+                        &model_path,
+                        &temp_path,
+                    ).await?
+                }
+                "cloud" => transcribe_groq::transcribe_groq(&settings.groq_api_key, &temp_path).await?,
+                _ => return Err(format!("Unknown engine: {}", settings.engine)),
+            };
+
+            let cleaned = cleanup_text(&raw_text);
+            if !cleaned.is_empty() {
+                paste_text(&cleaned)?;
+            }
+
+            Ok(cleaned)
         }
+        .await;
 
-        // Transcribe
-        let raw_text = match settings.engine.as_str() {
-            "local" => {
-                let model_path = app_dir.join(transcribe_local::model_filename(&settings.whisper_model));
-                transcribe_local::transcribe_local(app, &model_path, &temp_path).await?
-            }
-            "cloud" => {
-                transcribe_groq::transcribe_groq(&settings.groq_api_key, &temp_path).await?
-            }
-            _ => return Err(format!("Unknown engine: {}", settings.engine)),
-        };
-
-        // Cleanup temp file
         let _ = std::fs::remove_file(&temp_path);
-
-        // Clean up text
-        let cleaned = cleanup_text(&raw_text);
-
-        // Auto-paste
-        if !cleaned.is_empty() {
-            paste_text(&cleaned)?;
-        }
-
-        // Reset state
-        {
-            let mut state = self.state.lock().unwrap();
-            *state = RecordingState::Ready;
-            let _ = app.emit("recording-state", RecordingState::Ready);
-            update_overlay(app, &RecordingState::Ready);
-        }
-
-        Ok(cleaned)
+        self.set_state(app, RecordingState::Ready);
+        result
     }
 }
 

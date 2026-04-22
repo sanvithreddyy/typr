@@ -116,7 +116,10 @@ impl AudioRecorder {
 
         let samples = self.samples.lock().unwrap();
         if samples.is_empty() {
-            return Err("No audio captured".to_string());
+            return Err(
+                "No audio captured. Hold the hotkey while speaking and verify the selected microphone is receiving input."
+                    .to_string(),
+            );
         }
 
         println!("[Typr] Captured {} raw samples", samples.len());
