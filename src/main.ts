@@ -2,11 +2,15 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
+const DEFAULT_OPENROUTER_MODEL = "google/gemini-3.1-flash-lite-preview";
+
 interface Settings {
   microphone: string;
   engine: string;
   whisperModel: string;
   groqApiKey: string;
+  openRouterApiKey: string;
+  openRouterModel: string;
   recordingMode: string;
   hotkey: string;
 }
@@ -27,14 +31,19 @@ const statusDot = document.getElementById("status-dot")!;
 const statusText = document.getElementById("status-text")!;
 const micSelect = document.getElementById("mic-select") as HTMLSelectElement;
 const engineLocal = document.getElementById("engine-local")!;
-const engineCloud = document.getElementById("engine-cloud")!;
+const engineGroq = document.getElementById("engine-groq")!;
+const engineOpenRouter = document.getElementById("engine-openrouter")!;
 const localSettings = document.getElementById("local-settings")!;
-const cloudSettings = document.getElementById("cloud-settings")!;
+const groqSettings = document.getElementById("groq-settings")!;
+const openRouterKeyRow = document.getElementById("openrouter-key-row")!;
+const openRouterModelRow = document.getElementById("openrouter-model-row")!;
 const modelSelect = document.getElementById("model-select") as HTMLSelectElement;
 const downloadBtn = document.getElementById("download-btn")!;
 const downloadProgress = document.getElementById("download-progress")!;
 const progressFill = document.getElementById("progress-fill")!;
 const groqKey = document.getElementById("groq-key") as HTMLInputElement;
+const openRouterKey = document.getElementById("openrouter-key") as HTMLInputElement;
+const openRouterModel = document.getElementById("openrouter-model") as HTMLInputElement;
 const modeToggle = document.getElementById("mode-toggle")!;
 const modePtt = document.getElementById("mode-ptt")!;
 const hotkeyText = document.getElementById("hotkey-text")!;
@@ -94,6 +103,10 @@ async function loadSettings() {
   // Groq key
   groqKey.value = currentSettings.groqApiKey;
 
+  // OpenRouter
+  openRouterKey.value = currentSettings.openRouterApiKey;
+  openRouterModel.value = currentSettings.openRouterModel;
+
   // Recording mode
   setRecordingMode(currentSettings.recordingMode);
 
@@ -102,11 +115,22 @@ async function loadSettings() {
 }
 
 function setEngine(engine: string) {
+  if (engine === "cloud") {
+    engine = "groq";
+  }
+
   currentSettings.engine = engine;
   engineLocal.classList.toggle("active", engine === "local");
-  engineCloud.classList.toggle("active", engine === "cloud");
+  engineGroq.classList.toggle("active", engine === "groq");
+  engineOpenRouter.classList.toggle("active", engine === "openrouter");
   localSettings.classList.toggle("hidden", engine !== "local");
-  cloudSettings.classList.toggle("hidden", engine !== "cloud");
+  groqSettings.classList.toggle("hidden", engine !== "groq");
+  openRouterKeyRow.classList.toggle("hidden", engine !== "openrouter");
+  openRouterModelRow.classList.toggle("hidden", engine !== "openrouter");
+
+  if (engine !== "local") {
+    downloadProgress.classList.add("hidden");
+  }
 }
 
 function setRecordingMode(mode: string) {
@@ -127,6 +151,8 @@ async function saveSettings() {
   currentSettings.microphone = micSelect.value;
   currentSettings.whisperModel = modelSelect.value;
   currentSettings.groqApiKey = groqKey.value;
+  currentSettings.openRouterApiKey = openRouterKey.value;
+  currentSettings.openRouterModel = openRouterModel.value.trim() || DEFAULT_OPENROUTER_MODEL;
   await invoke("save_settings", { settings: currentSettings });
 }
 
@@ -136,8 +162,13 @@ engineLocal.addEventListener("click", () => {
   saveSettings();
 });
 
-engineCloud.addEventListener("click", () => {
-  setEngine("cloud");
+engineGroq.addEventListener("click", () => {
+  setEngine("groq");
+  saveSettings();
+});
+
+engineOpenRouter.addEventListener("click", () => {
+  setEngine("openrouter");
   saveSettings();
 });
 
@@ -165,6 +196,8 @@ downloadBtn.addEventListener("click", async () => {
 });
 
 groqKey.addEventListener("change", () => saveSettings());
+openRouterKey.addEventListener("change", () => saveSettings());
+openRouterModel.addEventListener("change", () => saveSettings());
 
 modeToggle.addEventListener("click", () => {
   setRecordingMode("toggle");

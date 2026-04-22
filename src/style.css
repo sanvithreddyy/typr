@@ -314,7 +314,8 @@ body {
 /* ── Form Controls ──────────────────────────────────── */
 
 select,
-input[type="password"] {
+input[type="password"],
+input[type="text"] {
   width: 100%;
   max-width: 280px;
   padding: 7px 12px;
@@ -339,12 +340,14 @@ select {
 }
 
 select:focus,
-input[type="password"]:focus {
+input[type="password"]:focus,
+input[type="text"]:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-subtle);
 }
 
-input[type="password"]::placeholder {
+input[type="password"]::placeholder,
+input[type="text"]::placeholder {
   color: var(--text-tertiary);
 }
 

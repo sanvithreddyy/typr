@@ -2,7 +2,11 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+pub const DEFAULT_OPENROUTER_MODEL: &str = "google/gemini-3.1-flash-lite-preview";
+const LEGACY_OPENROUTER_MODEL: &str = "openai/gpt-audio-mini";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct Settings {
     pub microphone: String,
     pub engine: String,
@@ -10,6 +14,10 @@ pub struct Settings {
     pub whisper_model: String,
     #[serde(rename = "groqApiKey")]
     pub groq_api_key: String,
+    #[serde(rename = "openRouterApiKey")]
+    pub openrouter_api_key: String,
+    #[serde(rename = "openRouterModel")]
+    pub openrouter_model: String,
     #[serde(rename = "recordingMode")]
     pub recording_mode: String,
     pub hotkey: String,
@@ -22,6 +30,8 @@ impl Default for Settings {
             engine: "local".to_string(),
             whisper_model: "small".to_string(),
             groq_api_key: String::new(),
+            openrouter_api_key: String::new(),
+            openrouter_model: DEFAULT_OPENROUTER_MODEL.to_string(),
             recording_mode: "toggle".to_string(),
             hotkey: "CmdOrCtrl+Shift+Space".to_string(),
         }
@@ -33,10 +43,30 @@ impl Settings {
         app_dir.join("config.json")
     }
 
+    pub fn normalized(mut self) -> Self {
+        if self.engine == "cloud" {
+            self.engine = "groq".to_string();
+        }
+
+        if self.engine != "local" && self.engine != "groq" && self.engine != "openrouter" {
+            self.engine = "local".to_string();
+        }
+
+        if self.openrouter_model.trim().is_empty()
+            || self.openrouter_model == LEGACY_OPENROUTER_MODEL
+        {
+            self.openrouter_model = DEFAULT_OPENROUTER_MODEL.to_string();
+        }
+
+        self
+    }
+
     pub fn load(app_dir: &PathBuf) -> Self {
         let path = Self::config_path(app_dir);
         match fs::read_to_string(&path) {
-            Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
+            Ok(contents) => serde_json::from_str::<Self>(&contents)
+                .unwrap_or_default()
+                .normalized(),
             Err(_) => Self::default(),
         }
     }
@@ -61,6 +91,8 @@ mod tests {
         assert_eq!(settings.engine, "local");
         assert_eq!(settings.whisper_model, "small");
         assert_eq!(settings.groq_api_key, "");
+        assert_eq!(settings.openrouter_api_key, "");
+        assert_eq!(settings.openrouter_model, DEFAULT_OPENROUTER_MODEL);
         assert_eq!(settings.recording_mode, "toggle");
         assert_eq!(settings.hotkey, "CmdOrCtrl+Shift+Space");
     }
@@ -71,14 +103,41 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
 
         let mut settings = Settings::default();
-        settings.engine = "cloud".to_string();
+        settings.engine = "groq".to_string();
         settings.groq_api_key = "test-key-123".to_string();
+        settings.openrouter_model = DEFAULT_OPENROUTER_MODEL.to_string();
 
         settings.save(&dir).unwrap();
         let loaded = Settings::load(&dir);
 
-        assert_eq!(loaded.engine, "cloud");
+        assert_eq!(loaded.engine, "groq");
         assert_eq!(loaded.groq_api_key, "test-key-123");
+        assert_eq!(loaded.openrouter_model, DEFAULT_OPENROUTER_MODEL);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_load_old_cloud_config_is_migrated() {
+        let dir = temp_dir().join("typr_test_migrate_cloud");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("config.json"),
+            r#"{
+                "microphone": "default",
+                "engine": "cloud",
+                "whisperModel": "small",
+                "groqApiKey": "groq-test",
+                "recordingMode": "toggle",
+                "hotkey": "CmdOrCtrl+Shift+Space"
+            }"#,
+        ).unwrap();
+
+        let settings = Settings::load(&dir);
+        assert_eq!(settings.engine, "groq");
+        assert_eq!(settings.groq_api_key, "groq-test");
+        assert_eq!(settings.openrouter_model, DEFAULT_OPENROUTER_MODEL);
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -100,6 +159,33 @@ mod tests {
 
         let settings = Settings::load(&dir);
         assert_eq!(settings, Settings::default());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_legacy_openrouter_model_is_migrated() {
+        let dir = temp_dir().join("typr_test_legacy_openrouter_model");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("config.json"),
+            r#"{
+                "microphone": "default",
+                "engine": "openrouter",
+                "whisperModel": "small",
+                "openRouterApiKey": "or-test",
+                "openRouterModel": "openai/gpt-audio-mini",
+                "recordingMode": "toggle",
+                "hotkey": "CmdOrCtrl+Shift+Space"
+            }"#,
+        )
+        .unwrap();
+
+        let settings = Settings::load(&dir);
+        assert_eq!(settings.engine, "openrouter");
+        assert_eq!(settings.openrouter_api_key, "or-test");
+        assert_eq!(settings.openrouter_model, DEFAULT_OPENROUTER_MODEL);
 
         let _ = fs::remove_dir_all(&dir);
     }

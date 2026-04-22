@@ -82,12 +82,13 @@
             <div class="setting-row">
               <div class="setting-label">
                 <span class="label-text">Transcription Engine</span>
-                <span class="label-hint">Local runs on-device, Cloud requires an API key</span>
+                <span class="label-hint">Local runs on-device, while Groq and OpenRouter use API keys</span>
               </div>
               <div class="setting-control">
                 <div class="toggle-group">
                   <button id="engine-local" class="toggle-btn active">Local Whisper</button>
-                  <button id="engine-cloud" class="toggle-btn">Groq Cloud</button>
+                  <button id="engine-groq" class="toggle-btn">Groq</button>
+                  <button id="engine-openrouter" class="toggle-btn">OpenRouter</button>
                 </div>
               </div>
             </div>
@@ -109,13 +110,31 @@
             <div id="download-progress" class="hidden">
               <div id="progress-bar"><div id="progress-fill"></div></div>
             </div>
-            <div class="setting-row hidden" id="cloud-settings">
+            <div class="setting-row hidden" id="groq-settings">
               <div class="setting-label">
                 <span class="label-text">Groq API Key</span>
                 <span class="label-hint">Get your key from console.groq.com</span>
               </div>
               <div class="setting-control">
                 <input type="password" id="groq-key" placeholder="gsk_..." />
+              </div>
+            </div>
+            <div class="setting-row hidden" id="openrouter-key-row">
+              <div class="setting-label">
+                <span class="label-text">OpenRouter API Key</span>
+                <span class="label-hint">Paste your OpenRouter key to enable routed speech transcription</span>
+              </div>
+              <div class="setting-control">
+                <input type="password" id="openrouter-key" placeholder="sk-or-..." />
+              </div>
+            </div>
+            <div class="setting-row hidden" id="openrouter-model-row">
+              <div class="setting-label">
+                <span class="label-text">OpenRouter Model</span>
+                <span class="label-hint">Recommended default: google/gemini-3.1-flash-lite-preview for transcription-focused quality at low cost</span>
+              </div>
+              <div class="setting-control">
+                <input type="text" id="openrouter-model" placeholder="google/gemini-3.1-flash-lite-preview" />
               </div>
             </div>
           </div>

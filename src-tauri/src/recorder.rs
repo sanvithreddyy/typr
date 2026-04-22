@@ -8,6 +8,7 @@ use crate::paste::paste_text;
 use crate::settings::Settings;
 use crate::transcribe_local;
 use crate::transcribe_groq;
+use crate::transcribe_openrouter;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub enum RecordingState {
@@ -98,7 +99,14 @@ impl Recorder {
                         &temp_path,
                     ).await?
                 }
-                "cloud" => transcribe_groq::transcribe_groq(&settings.groq_api_key, &temp_path).await?,
+                "groq" => transcribe_groq::transcribe_groq(&settings.groq_api_key, &temp_path).await?,
+                "openrouter" => {
+                    transcribe_openrouter::transcribe_openrouter(
+                        &settings.openrouter_api_key,
+                        &settings.openrouter_model,
+                        &temp_path,
+                    ).await?
+                }
                 _ => return Err(format!("Unknown engine: {}", settings.engine)),
             };
 
