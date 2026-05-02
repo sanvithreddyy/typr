@@ -47,6 +47,7 @@ const openRouterModel = document.getElementById("openrouter-model") as HTMLInput
 const modeToggle = document.getElementById("mode-toggle")!;
 const modePtt = document.getElementById("mode-ptt")!;
 const hotkeyText = document.getElementById("hotkey-text")!;
+const hotkeyBtn = document.getElementById("hotkey-btn")!;
 
 // Section navigation
 const navItems = document.querySelectorAll(".nav-item");
@@ -111,7 +112,11 @@ async function loadSettings() {
   setRecordingMode(currentSettings.recordingMode);
 
   // Hotkey
-  hotkeyText.textContent = currentSettings.hotkey.replace("CmdOrCtrl", "Cmd");
+  hotkeyText.textContent = displayHotkey(currentSettings.hotkey);
+}
+
+function displayHotkey(hotkey: string): string {
+  return hotkey.replace("CmdOrCtrl", "Ctrl");
 }
 
 function setEngine(engine: string) {
@@ -230,6 +235,120 @@ listen<DownloadProgress>("download-progress", (event) => {
   const { percent } = event.payload;
   progressFill.style.width = `${percent}%`;
 });
+
+// ── Hotkey capture ─────────────────────────────────────
+
+let isCapturingHotkey = false;
+
+function enterHotkeyCapture() {
+  isCapturingHotkey = true;
+  hotkeyText.textContent = "Press a key or mouse button…";
+  hotkeyBtn.classList.add("capturing");
+}
+
+function exitHotkeyCapture(committed: boolean) {
+  isCapturingHotkey = false;
+  hotkeyBtn.classList.remove("capturing");
+  if (!committed) {
+    hotkeyText.textContent = displayHotkey(currentSettings.hotkey);
+  }
+}
+
+function modifierTokens(e: KeyboardEvent | MouseEvent): string[] {
+  const mods: string[] = [];
+  if (e.ctrlKey) mods.push("Ctrl");
+  if (e.shiftKey) mods.push("Shift");
+  if (e.altKey) mods.push("Alt");
+  if (e.metaKey) mods.push("Win");
+  return mods;
+}
+
+function mainKeyName(e: KeyboardEvent): string | null {
+  if (["Control", "Shift", "Alt", "Meta", "OS"].includes(e.key)) return null;
+  if (e.code === "Space") return "Space";
+  if (e.key.length === 1) return e.key.toUpperCase();
+  return e.key; // Enter, Escape, F1, ArrowUp, etc.
+}
+
+function mouseButtonName(button: number): string | null {
+  switch (button) {
+    case 1:
+      return "MiddleMouse";
+    case 3:
+      return "XButton1";
+    case 4:
+      return "XButton2";
+    default:
+      return null; // left/right click are not bindable
+  }
+}
+
+async function commitHotkey(hotkey: string) {
+  exitHotkeyCapture(true);
+  hotkeyText.textContent = displayHotkey(hotkey);
+  currentSettings.hotkey = hotkey;
+  try {
+    await invoke("save_settings", { settings: currentSettings });
+  } catch (e) {
+    console.error("Failed to register hotkey:", e);
+    hotkeyText.textContent = `Failed: ${e}`;
+  }
+}
+
+hotkeyBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (!isCapturingHotkey) enterHotkeyCapture();
+});
+
+window.addEventListener(
+  "keydown",
+  (e) => {
+    if (!isCapturingHotkey) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (e.key === "Escape") {
+      exitHotkeyCapture(false);
+      return;
+    }
+
+    const main = mainKeyName(e);
+    if (!main) return; // modifier-only press; wait for the actual key
+
+    const tokens = [...modifierTokens(e), main];
+    commitHotkey(tokens.join("+"));
+  },
+  { capture: true }
+);
+
+window.addEventListener(
+  "mousedown",
+  (e) => {
+    if (!isCapturingHotkey) return;
+    // Block all clicks while capturing so the user can't accidentally trigger
+    // other UI.
+    e.preventDefault();
+    e.stopPropagation();
+
+    const button = mouseButtonName(e.button);
+    if (button) {
+      const tokens = [...modifierTokens(e), button];
+      commitHotkey(tokens.join("+"));
+    } else if (e.button === 2) {
+      exitHotkeyCapture(false);
+    }
+    // Left-click during capture: ignore (button is unbindable).
+  },
+  { capture: true }
+);
+
+window.addEventListener(
+  "contextmenu",
+  (e) => {
+    if (isCapturingHotkey) e.preventDefault();
+  },
+  { capture: true }
+);
 
 // Initialize
 loadSettings();

@@ -462,6 +462,32 @@ kbd {
   letter-spacing: 0.02em;
 }
 
+.hotkey-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.hotkey-btn:hover kbd {
+  border-color: var(--accent, #6b7280);
+  color: var(--text-primary, inherit);
+}
+
+.hotkey-btn.capturing kbd {
+  border-color: var(--accent, #3b82f6);
+  background: var(--surface-hover, var(--surface));
+  color: var(--text-primary, inherit);
+  animation: hotkey-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes hotkey-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
 /* ── Utility ────────────────────────────────────────── */
 
 .hidden {

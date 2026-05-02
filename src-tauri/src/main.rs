@@ -7,6 +7,9 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 use typr_lib::audio;
 use typr_lib::downloader;
+use typr_lib::hotkey::{self, Hotkey};
+#[cfg(windows)]
+use typr_lib::mouse_hook::{self, ButtonState};
 use typr_lib::recorder::{Recorder, RecordingState};
 use typr_lib::settings::Settings;
 use typr_lib::transcribe_local;
@@ -29,9 +32,20 @@ fn get_settings(state: State<AppState>) -> Settings {
 }
 
 #[tauri::command]
-fn save_settings(state: State<AppState>, settings: Settings) -> Result<(), String> {
+fn save_settings(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    settings: Settings,
+) -> Result<(), String> {
+    let old_hotkey = state.settings.lock().unwrap().hotkey.clone();
+    let new_hotkey = settings.hotkey.clone();
     settings.save(&state.app_dir)?;
     *state.settings.lock().unwrap() = settings;
+
+    if old_hotkey != new_hotkey {
+        register_hotkey(&app, &new_hotkey)?;
+        println!("[Typr] Hotkey changed: {} -> {}", old_hotkey, new_hotkey);
+    }
     Ok(())
 }
 
@@ -92,8 +106,82 @@ async fn do_toggle_recording(
                 .await?;
             Ok(result)
         }
-        RecordingState::Transcribing => {
-            Err("Currently transcribing, please wait".to_string())
+        RecordingState::Transcribing => Err("Currently transcribing, please wait".to_string()),
+    }
+}
+
+/// Shared dispatch for hotkey events (whether keyboard or mouse).
+fn handle_hotkey_event(handle: tauri::AppHandle, pressed: bool) {
+    let state = handle.state::<AppState>();
+    let mode = state.settings.lock().unwrap().recording_mode.clone();
+
+    if pressed {
+        match mode.as_str() {
+            "toggle" => {
+                let h = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let s = h.state::<AppState>();
+                    match do_toggle_recording(&h, s.inner()).await {
+                        Ok(result) => println!("[Typr] Toggle result: {}", result),
+                        Err(e) => eprintln!("[Typr] Toggle error: {}", e),
+                    }
+                });
+            }
+            "push-to-talk" => {
+                if state.recorder.get_state() == RecordingState::Ready {
+                    let mic = state.settings.lock().unwrap().microphone.clone();
+                    if let Err(e) = state.recorder.start_recording(&handle, &mic) {
+                        eprintln!("[Typr] PTT start error: {}", e);
+                    }
+                }
+            }
+            _ => {}
+        }
+    } else if mode == "push-to-talk" {
+        let h = handle.clone();
+        tauri::async_runtime::spawn(async move {
+            let s = h.state::<AppState>();
+            if s.recorder.get_state() == RecordingState::Recording {
+                let settings = s.settings.lock().unwrap().clone();
+                if let Err(e) = s
+                    .recorder
+                    .stop_and_transcribe(&h, &settings, &s.app_dir)
+                    .await
+                {
+                    eprintln!("[Typr] PTT transcription error: {}", e);
+                }
+            }
+        });
+    }
+}
+
+/// Register the given hotkey string. Replaces any previously registered hotkey.
+fn register_hotkey(app: &tauri::AppHandle, hotkey_str: &str) -> Result<(), String> {
+    if let Err(e) = app.global_shortcut().unregister_all() {
+        eprintln!("[Typr] unregister_all warning: {}", e);
+    }
+    #[cfg(windows)]
+    mouse_hook::clear_binding();
+
+    match hotkey::parse(hotkey_str) {
+        Hotkey::Keyboard(s) => {
+            let handle_clone = app.clone();
+            app.global_shortcut()
+                .on_shortcut(s.as_str(), move |_app, _shortcut, event| {
+                    handle_hotkey_event(handle_clone.clone(), event.state == ShortcutState::Pressed);
+                })
+                .map_err(|e| format!("Failed to register keyboard shortcut: {}", e))?;
+            println!("[Typr] Keyboard shortcut registered: {}", s);
+            Ok(())
+        }
+        #[cfg(windows)]
+        Hotkey::Mouse { button, modifiers } => {
+            mouse_hook::set_binding(button, modifiers);
+            println!(
+                "[Typr] Mouse hotkey set: button={:?} modifiers={:?}",
+                button, modifiers
+            );
+            Ok(())
         }
     }
 }
@@ -154,71 +242,28 @@ fn main() {
                 Err(e) => eprintln!("[Typr] Failed to create overlay: {}", e),
             }
 
-            let handle = app.handle().clone();
-
-            println!("[Typr] Registering global shortcut: {}", initial_hotkey);
-
-            match app.global_shortcut().on_shortcut(
-                initial_hotkey.as_str(),
-                move |_app, shortcut, event| {
-                    println!("[Typr] Hotkey event: {:?} state={:?}", shortcut, event.state);
-                    let handle = handle.clone();
-                    let state = handle.state::<AppState>();
-                    let mode = state.settings.lock().unwrap().recording_mode.clone();
-                    println!("[Typr] Recording mode: {}", mode);
-
-                    match event.state {
-                        ShortcutState::Pressed => {
-                            match mode.as_str() {
-                                "toggle" => {
-                                    tauri::async_runtime::spawn(async move {
-                                        let state = handle.state::<AppState>();
-                                        println!("[Typr] Toggle mode: calling do_toggle_recording");
-                                        match do_toggle_recording(&handle, state.inner()).await {
-                                            Ok(result) => println!("[Typr] Toggle result: {}", result),
-                                            Err(e) => eprintln!("[Typr] Toggle error: {}", e),
-                                        }
-                                    });
-                                }
-                                "push-to-talk" => {
-                                    let current = state.recorder.get_state();
-                                    println!("[Typr] PTT mode, current state: {:?}", current);
-                                    if current == RecordingState::Ready {
-                                        let mic = state.settings.lock().unwrap().microphone.clone();
-                                        match state.recorder.start_recording(&handle, &mic) {
-                                            Ok(_) => println!("[Typr] Recording started"),
-                                            Err(e) => eprintln!("[Typr] Start recording error: {}", e),
-                                        }
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                        ShortcutState::Released => {
-                            if mode == "push-to-talk" {
-                                tauri::async_runtime::spawn(async move {
-                                    let state = handle.state::<AppState>();
-                                    let current = state.recorder.get_state();
-                                    if current == RecordingState::Recording {
-                                        let settings =
-                                            state.settings.lock().unwrap().clone();
-                                        match state.recorder.stop_and_transcribe(
-                                            &handle,
-                                            &settings,
-                                            &state.app_dir,
-                                        ).await {
-                                            Ok(result) => println!("[Typr] Transcription: {}", result),
-                                            Err(e) => eprintln!("[Typr] Transcription error: {}", e),
-                                        }
-                                    }
-                                });
-                            }
-                        }
+            // Install the Win32 mouse hook + spawn a thread that forwards
+            // matched mouse events into the same hotkey dispatch path the
+            // keyboard hotkey uses.
+            #[cfg(windows)]
+            {
+                let receiver = mouse_hook::install();
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    for event in receiver {
+                        let pressed = matches!(event.state, ButtonState::Pressed);
+                        println!(
+                            "[Typr] Mouse hotkey event: button={:?} pressed={}",
+                            event.button, pressed
+                        );
+                        handle_hotkey_event(handle.clone(), pressed);
                     }
-                },
-            ) {
-                Ok(_) => println!("[Typr] Global shortcut registered successfully"),
-                Err(e) => eprintln!("[Typr] ERROR: Failed to register global shortcut: {}", e),
+                });
+            }
+
+            println!("[Typr] Registering global hotkey: {}", initial_hotkey);
+            if let Err(e) = register_hotkey(app.handle(), &initial_hotkey) {
+                eprintln!("[Typr] ERROR: Failed to register hotkey: {}", e);
             }
 
             Ok(())

@@ -27,3 +27,18 @@ dirs = "6"
 arboard = "3"
 futures-util = "0.3"
 base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
+
+# Disable PDB generation in dev builds — saves several GB of disk space.
+# Debug symbols make the binary larger and the linker writes a separate .pdb
+# per crate. Tauri dev mode doesn't need them for normal use.
+[profile.dev]
+debug = 0
+strip = "debuginfo"
+incremental = true
