@@ -238,7 +238,15 @@ fn main() {
             .build();
 
             match overlay {
-                Ok(_) => println!("[Typr] Overlay window created"),
+                Ok(w) => {
+                    // Mouse clicks pass through the overlay to windows beneath it,
+                    // so the indicator never blocks the close/maximize buttons it
+                    // hovers near.
+                    if let Err(e) = w.set_ignore_cursor_events(true) {
+                        eprintln!("[Typr] set_ignore_cursor_events failed: {}", e);
+                    }
+                    println!("[Typr] Overlay window created");
+                }
                 Err(e) => eprintln!("[Typr] Failed to create overlay: {}", e),
             }
 
