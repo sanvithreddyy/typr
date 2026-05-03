@@ -22,6 +22,30 @@ pub enum Hotkey {
     Keyboard(String),
 }
 
+/// True if the hotkey string names any mouse button. Cross-platform — used
+/// during settings migration to route a legacy single hotkey string into the
+/// correct slot, even on non-Windows targets where `parse` would always
+/// return `Keyboard`.
+pub fn is_mouse_hotkey(s: &str) -> bool {
+    s.split('+').any(|tok| {
+        matches!(
+            tok.trim().to_lowercase().as_str(),
+            "xbutton1"
+                | "mouse4"
+                | "mousebutton4"
+                | "back"
+                | "xbutton2"
+                | "mouse5"
+                | "mousebutton5"
+                | "forward"
+                | "middlemouse"
+                | "mousemiddle"
+                | "mouse3"
+                | "middle"
+        )
+    })
+}
+
 pub fn parse(s: &str) -> Hotkey {
     #[cfg(windows)]
     {

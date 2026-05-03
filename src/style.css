@@ -483,6 +483,40 @@ kbd {
   animation: hotkey-pulse 1.4s ease-in-out infinite;
 }
 
+.hotkey-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hotkey-clear {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--text-tertiary);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all var(--transition);
+  padding: 0;
+}
+
+.hotkey-clear:hover {
+  color: var(--red);
+  border-color: var(--border-strong);
+  background: var(--surface);
+}
+
+.hotkey-empty {
+  color: var(--text-tertiary);
+  font-style: normal;
+}
+
 @keyframes hotkey-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.6; }

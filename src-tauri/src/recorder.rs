@@ -17,6 +17,15 @@ pub enum RecordingState {
     Transcribing,
 }
 
+/// Which input device started a recording. Used to enforce the rule that
+/// only the source that started a recording is allowed to stop it — so a
+/// keyboard press doesn't cancel a mouse-button recording mid-flight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriggerSource {
+    Keyboard,
+    Mouse,
+}
+
 fn update_overlay(app: &AppHandle, state: &RecordingState) {
     if let Some(overlay) = app.get_webview_window("overlay") {
         let class = match state {
@@ -32,6 +41,7 @@ fn update_overlay(app: &AppHandle, state: &RecordingState) {
 pub struct Recorder {
     state: Arc<Mutex<RecordingState>>,
     audio_recorder: Arc<Mutex<AudioRecorder>>,
+    active_trigger: Arc<Mutex<Option<TriggerSource>>>,
 }
 
 impl Recorder {
@@ -39,11 +49,17 @@ impl Recorder {
         Self {
             state: Arc::new(Mutex::new(RecordingState::Ready)),
             audio_recorder: Arc::new(Mutex::new(AudioRecorder::new())),
+            active_trigger: Arc::new(Mutex::new(None)),
         }
     }
 
     pub fn get_state(&self) -> RecordingState {
         self.state.lock().unwrap().clone()
+    }
+
+    /// Source that started the in-progress recording, or None if idle.
+    pub fn active_trigger(&self) -> Option<TriggerSource> {
+        *self.active_trigger.lock().unwrap()
     }
 
     fn set_state(&self, app: &AppHandle, next: RecordingState) {
@@ -52,7 +68,12 @@ impl Recorder {
         update_overlay(app, &next);
     }
 
-    pub fn start_recording(&self, app: &AppHandle, mic_name: &str) -> Result<(), String> {
+    pub fn start_recording(
+        &self,
+        app: &AppHandle,
+        mic_name: &str,
+        source: TriggerSource,
+    ) -> Result<(), String> {
         let mut state = self.state.lock().unwrap();
         if *state != RecordingState::Ready {
             return Err("Already recording or transcribing".to_string());
@@ -62,6 +83,7 @@ impl Recorder {
         recorder.start(mic_name)?;
 
         *state = RecordingState::Recording;
+        *self.active_trigger.lock().unwrap() = Some(source);
         let _ = app.emit("recording-state", RecordingState::Recording);
         update_overlay(app, &RecordingState::Recording);
         Ok(())
@@ -72,11 +94,19 @@ impl Recorder {
         app: &AppHandle,
         settings: &Settings,
         app_dir: &PathBuf,
+        source: TriggerSource,
     ) -> Result<String, String> {
         {
             let state = self.state.lock().unwrap();
             if *state != RecordingState::Recording {
                 return Err("Not currently recording".to_string());
+            }
+            let trigger = self.active_trigger.lock().unwrap();
+            if *trigger != Some(source) {
+                return Err(
+                    "Recording was started by a different hotkey; use the same one to stop it"
+                        .to_string(),
+                );
             }
         }
         self.set_state(app, RecordingState::Transcribing);
@@ -120,6 +150,7 @@ impl Recorder {
         .await;
 
         let _ = std::fs::remove_file(&temp_path);
+        *self.active_trigger.lock().unwrap() = None;
         self.set_state(app, RecordingState::Ready);
         result
     }

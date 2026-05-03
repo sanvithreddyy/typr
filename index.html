@@ -160,13 +160,30 @@
             </div>
             <div class="setting-row">
               <div class="setting-label">
-                <span class="label-text">Hotkey</span>
-                <span class="label-hint">Click to set. Supports keys + mouse buttons (XButton1, XButton2, MiddleMouse).</span>
+                <span class="label-text">Keyboard hotkey</span>
+                <span class="label-hint">Click to set. Press Esc to cancel. Leave empty to disable.</span>
               </div>
               <div class="setting-control">
-                <button id="hotkey-btn" class="hotkey-btn" type="button">
-                  <kbd id="hotkey-text">Ctrl+Shift+Space</kbd>
-                </button>
+                <div class="hotkey-row">
+                  <button id="kb-hotkey-btn" class="hotkey-btn" type="button">
+                    <kbd id="kb-hotkey-text">—</kbd>
+                  </button>
+                  <button id="kb-hotkey-clear" class="hotkey-clear" type="button" title="Clear">×</button>
+                </div>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text">Mouse hotkey</span>
+                <span class="label-hint">Click then press a side button (XButton1, XButton2, MiddleMouse). Modifier keys can be combined.</span>
+              </div>
+              <div class="setting-control">
+                <div class="hotkey-row">
+                  <button id="mouse-hotkey-btn" class="hotkey-btn" type="button">
+                    <kbd id="mouse-hotkey-text">—</kbd>
+                  </button>
+                  <button id="mouse-hotkey-clear" class="hotkey-clear" type="button" title="Clear">×</button>
+                </div>
               </div>
             </div>
           </div>

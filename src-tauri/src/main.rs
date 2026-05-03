@@ -10,7 +10,7 @@ use typr_lib::downloader;
 use typr_lib::hotkey::{self, Hotkey};
 #[cfg(windows)]
 use typr_lib::mouse_hook::{self, ButtonState};
-use typr_lib::recorder::{Recorder, RecordingState};
+use typr_lib::recorder::{Recorder, RecordingState, TriggerSource};
 use typr_lib::settings::Settings;
 use typr_lib::transcribe_local;
 
@@ -37,14 +37,21 @@ fn save_settings(
     state: State<AppState>,
     settings: Settings,
 ) -> Result<(), String> {
-    let old_hotkey = state.settings.lock().unwrap().hotkey.clone();
-    let new_hotkey = settings.hotkey.clone();
+    let (old_kb, old_mouse) = {
+        let s = state.settings.lock().unwrap();
+        (s.keyboard_hotkey.clone(), s.mouse_hotkey.clone())
+    };
+    let new_kb = settings.keyboard_hotkey.clone();
+    let new_mouse = settings.mouse_hotkey.clone();
     settings.save(&state.app_dir)?;
     *state.settings.lock().unwrap() = settings;
 
-    if old_hotkey != new_hotkey {
-        register_hotkey(&app, &new_hotkey)?;
-        println!("[Typr] Hotkey changed: {} -> {}", old_hotkey, new_hotkey);
+    if old_kb != new_kb || old_mouse != new_mouse {
+        register_hotkeys(&app, &new_kb, &new_mouse)?;
+        println!(
+            "[Typr] Hotkeys changed: kb {:?} -> {:?}, mouse {:?} -> {:?}",
+            old_kb, new_kb, old_mouse, new_mouse
+        );
     }
     Ok(())
 }
@@ -83,26 +90,31 @@ async fn toggle_recording(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    do_toggle_recording(&app, &state).await
+    // The settings UI's manual Toggle command isn't tied to a physical hotkey,
+    // so it uses whichever source is currently active (or defaults to Keyboard
+    // for the start case).
+    let source = state.recorder.active_trigger().unwrap_or(TriggerSource::Keyboard);
+    do_toggle_recording(&app, &state, source).await
 }
 
 /// Shared logic for toggle recording, used by both the Tauri command and hotkey handler.
 async fn do_toggle_recording(
     app: &tauri::AppHandle,
     state: &AppState,
+    source: TriggerSource,
 ) -> Result<String, String> {
     let current_state = state.recorder.get_state();
     match current_state {
         RecordingState::Ready => {
             let mic = state.settings.lock().unwrap().microphone.clone();
-            state.recorder.start_recording(app, &mic)?;
+            state.recorder.start_recording(app, &mic, source)?;
             Ok("recording".to_string())
         }
         RecordingState::Recording => {
             let settings = state.settings.lock().unwrap().clone();
             let result = state
                 .recorder
-                .stop_and_transcribe(app, &settings, &state.app_dir)
+                .stop_and_transcribe(app, &settings, &state.app_dir, source)
                 .await?;
             Ok(result)
         }
@@ -111,7 +123,7 @@ async fn do_toggle_recording(
 }
 
 /// Shared dispatch for hotkey events (whether keyboard or mouse).
-fn handle_hotkey_event(handle: tauri::AppHandle, pressed: bool) {
+fn handle_hotkey_event(handle: tauri::AppHandle, source: TriggerSource, pressed: bool) {
     let state = handle.state::<AppState>();
     let mode = state.settings.lock().unwrap().recording_mode.clone();
 
@@ -121,7 +133,7 @@ fn handle_hotkey_event(handle: tauri::AppHandle, pressed: bool) {
                 let h = handle.clone();
                 tauri::async_runtime::spawn(async move {
                     let s = h.state::<AppState>();
-                    match do_toggle_recording(&h, s.inner()).await {
+                    match do_toggle_recording(&h, s.inner(), source).await {
                         Ok(result) => println!("[Typr] Toggle result: {}", result),
                         Err(e) => eprintln!("[Typr] Toggle error: {}", e),
                     }
@@ -130,7 +142,7 @@ fn handle_hotkey_event(handle: tauri::AppHandle, pressed: bool) {
             "push-to-talk" => {
                 if state.recorder.get_state() == RecordingState::Ready {
                     let mic = state.settings.lock().unwrap().microphone.clone();
-                    if let Err(e) = state.recorder.start_recording(&handle, &mic) {
+                    if let Err(e) = state.recorder.start_recording(&handle, &mic, source) {
                         eprintln!("[Typr] PTT start error: {}", e);
                     }
                 }
@@ -145,7 +157,7 @@ fn handle_hotkey_event(handle: tauri::AppHandle, pressed: bool) {
                 let settings = s.settings.lock().unwrap().clone();
                 if let Err(e) = s
                     .recorder
-                    .stop_and_transcribe(&h, &settings, &s.app_dir)
+                    .stop_and_transcribe(&h, &settings, &s.app_dir, source)
                     .await
                 {
                     eprintln!("[Typr] PTT transcription error: {}", e);
@@ -155,41 +167,73 @@ fn handle_hotkey_event(handle: tauri::AppHandle, pressed: bool) {
     }
 }
 
-/// Register the given hotkey string. Replaces any previously registered hotkey.
-fn register_hotkey(app: &tauri::AppHandle, hotkey_str: &str) -> Result<(), String> {
+/// Register both hotkey slots. Either may be empty (= disabled). Always
+/// fully tears down previous bindings first so this is idempotent.
+fn register_hotkeys(
+    app: &tauri::AppHandle,
+    keyboard_hotkey: &str,
+    mouse_hotkey: &str,
+) -> Result<(), String> {
     if let Err(e) = app.global_shortcut().unregister_all() {
         eprintln!("[Typr] unregister_all warning: {}", e);
     }
     #[cfg(windows)]
     mouse_hook::clear_binding();
 
-    match hotkey::parse(hotkey_str) {
-        Hotkey::Keyboard(s) => {
-            let handle_clone = app.clone();
-            app.global_shortcut()
-                .on_shortcut(s.as_str(), move |_app, _shortcut, event| {
-                    handle_hotkey_event(handle_clone.clone(), event.state == ShortcutState::Pressed);
-                })
-                .map_err(|e| format!("Failed to register keyboard shortcut: {}", e))?;
-            println!("[Typr] Keyboard shortcut registered: {}", s);
-            Ok(())
-        }
-        #[cfg(windows)]
-        Hotkey::Mouse { button, modifiers } => {
-            mouse_hook::set_binding(button, modifiers);
-            println!(
-                "[Typr] Mouse hotkey set: button={:?} modifiers={:?}",
-                button, modifiers
-            );
-            Ok(())
+    if !keyboard_hotkey.trim().is_empty() {
+        match hotkey::parse(keyboard_hotkey) {
+            Hotkey::Keyboard(s) => {
+                let handle_clone = app.clone();
+                app.global_shortcut()
+                    .on_shortcut(s.as_str(), move |_app, _shortcut, event| {
+                        handle_hotkey_event(
+                            handle_clone.clone(),
+                            TriggerSource::Keyboard,
+                            event.state == ShortcutState::Pressed,
+                        );
+                    })
+                    .map_err(|e| format!("Failed to register keyboard shortcut: {}", e))?;
+                println!("[Typr] Keyboard shortcut registered: {}", s);
+            }
+            #[cfg(windows)]
+            Hotkey::Mouse { .. } => {
+                eprintln!(
+                    "[Typr] Ignoring keyboard slot value '{}' — it parses as a mouse hotkey",
+                    keyboard_hotkey
+                );
+            }
         }
     }
+
+    #[cfg(windows)]
+    if !mouse_hotkey.trim().is_empty() {
+        match hotkey::parse(mouse_hotkey) {
+            Hotkey::Mouse { button, modifiers } => {
+                mouse_hook::set_binding(button, modifiers);
+                println!(
+                    "[Typr] Mouse hotkey set: button={:?} modifiers={:?}",
+                    button, modifiers
+                );
+            }
+            Hotkey::Keyboard(_) => {
+                eprintln!(
+                    "[Typr] Ignoring mouse slot value '{}' — it parses as a keyboard hotkey",
+                    mouse_hotkey
+                );
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = mouse_hotkey;
+
+    Ok(())
 }
 
 fn main() {
     let app_dir = get_app_dir();
     let settings = Settings::load(&app_dir);
-    let initial_hotkey = settings.hotkey.clone();
+    let initial_kb = settings.keyboard_hotkey.clone();
+    let initial_mouse = settings.mouse_hotkey.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -264,14 +308,17 @@ fn main() {
                             "[Typr] Mouse hotkey event: button={:?} pressed={}",
                             event.button, pressed
                         );
-                        handle_hotkey_event(handle.clone(), pressed);
+                        handle_hotkey_event(handle.clone(), TriggerSource::Mouse, pressed);
                     }
                 });
             }
 
-            println!("[Typr] Registering global hotkey: {}", initial_hotkey);
-            if let Err(e) = register_hotkey(app.handle(), &initial_hotkey) {
-                eprintln!("[Typr] ERROR: Failed to register hotkey: {}", e);
+            println!(
+                "[Typr] Registering hotkeys: keyboard={:?} mouse={:?}",
+                initial_kb, initial_mouse
+            );
+            if let Err(e) = register_hotkeys(app.handle(), &initial_kb, &initial_mouse) {
+                eprintln!("[Typr] ERROR: Failed to register hotkeys: {}", e);
             }
 
             Ok(())

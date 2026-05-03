@@ -12,7 +12,8 @@ interface Settings {
   openRouterApiKey: string;
   openRouterModel: string;
   recordingMode: string;
-  hotkey: string;
+  keyboardHotkey: string;
+  mouseHotkey: string;
 }
 
 interface MicDevice {
@@ -46,8 +47,12 @@ const openRouterKey = document.getElementById("openrouter-key") as HTMLInputElem
 const openRouterModel = document.getElementById("openrouter-model") as HTMLInputElement;
 const modeToggle = document.getElementById("mode-toggle")!;
 const modePtt = document.getElementById("mode-ptt")!;
-const hotkeyText = document.getElementById("hotkey-text")!;
-const hotkeyBtn = document.getElementById("hotkey-btn")!;
+const kbHotkeyText = document.getElementById("kb-hotkey-text")!;
+const kbHotkeyBtn = document.getElementById("kb-hotkey-btn")!;
+const kbHotkeyClear = document.getElementById("kb-hotkey-clear")!;
+const mouseHotkeyText = document.getElementById("mouse-hotkey-text")!;
+const mouseHotkeyBtn = document.getElementById("mouse-hotkey-btn")!;
+const mouseHotkeyClear = document.getElementById("mouse-hotkey-clear")!;
 
 // Section navigation
 const navItems = document.querySelectorAll(".nav-item");
@@ -111,12 +116,25 @@ async function loadSettings() {
   // Recording mode
   setRecordingMode(currentSettings.recordingMode);
 
-  // Hotkey
-  hotkeyText.textContent = displayHotkey(currentSettings.hotkey);
+  // Hotkeys
+  renderHotkey("keyboard");
+  renderHotkey("mouse");
 }
 
 function displayHotkey(hotkey: string): string {
   return hotkey.replace("CmdOrCtrl", "Ctrl");
+}
+
+function renderHotkey(slot: HotkeySlot) {
+  const value = currentSettings[slot === "keyboard" ? "keyboardHotkey" : "mouseHotkey"];
+  const target = slot === "keyboard" ? kbHotkeyText : mouseHotkeyText;
+  if (value && value.trim()) {
+    target.textContent = displayHotkey(value);
+    target.classList.remove("hotkey-empty");
+  } else {
+    target.textContent = "—";
+    target.classList.add("hotkey-empty");
+  }
 }
 
 function setEngine(engine: string) {
@@ -238,20 +256,40 @@ listen<DownloadProgress>("download-progress", (event) => {
 
 // ── Hotkey capture ─────────────────────────────────────
 
-let isCapturingHotkey = false;
+type HotkeySlot = "keyboard" | "mouse";
 
-function enterHotkeyCapture() {
-  isCapturingHotkey = true;
-  hotkeyText.textContent = "Press a key or mouse button…";
-  hotkeyBtn.classList.add("capturing");
+let capturingSlot: HotkeySlot | null = null;
+
+function btnFor(slot: HotkeySlot): HTMLElement {
+  return slot === "keyboard" ? kbHotkeyBtn : mouseHotkeyBtn;
+}
+
+function textFor(slot: HotkeySlot): HTMLElement {
+  return slot === "keyboard" ? kbHotkeyText : mouseHotkeyText;
+}
+
+function promptFor(slot: HotkeySlot): string {
+  return slot === "keyboard"
+    ? "Press a key combination…"
+    : "Press a mouse button (XButton1, XButton2, MiddleMouse)…";
+}
+
+function enterHotkeyCapture(slot: HotkeySlot) {
+  // If another slot is mid-capture, cancel it first.
+  if (capturingSlot && capturingSlot !== slot) exitHotkeyCapture(false);
+  capturingSlot = slot;
+  const target = textFor(slot);
+  target.textContent = promptFor(slot);
+  target.classList.remove("hotkey-empty");
+  btnFor(slot).classList.add("capturing");
 }
 
 function exitHotkeyCapture(committed: boolean) {
-  isCapturingHotkey = false;
-  hotkeyBtn.classList.remove("capturing");
-  if (!committed) {
-    hotkeyText.textContent = displayHotkey(currentSettings.hotkey);
-  }
+  if (!capturingSlot) return;
+  const slot = capturingSlot;
+  capturingSlot = null;
+  btnFor(slot).classList.remove("capturing");
+  if (!committed) renderHotkey(slot);
 }
 
 function modifierTokens(e: KeyboardEvent | MouseEvent): string[] {
@@ -283,27 +321,55 @@ function mouseButtonName(button: number): string | null {
   }
 }
 
-async function commitHotkey(hotkey: string) {
+async function commitHotkey(slot: HotkeySlot, hotkey: string) {
   exitHotkeyCapture(true);
-  hotkeyText.textContent = displayHotkey(hotkey);
-  currentSettings.hotkey = hotkey;
+  if (slot === "keyboard") currentSettings.keyboardHotkey = hotkey;
+  else currentSettings.mouseHotkey = hotkey;
+  renderHotkey(slot);
   try {
     await invoke("save_settings", { settings: currentSettings });
   } catch (e) {
-    console.error("Failed to register hotkey:", e);
-    hotkeyText.textContent = `Failed: ${e}`;
+    console.error(`Failed to register ${slot} hotkey:`, e);
+    textFor(slot).textContent = `Failed: ${e}`;
   }
 }
 
-hotkeyBtn.addEventListener("click", (e) => {
+async function clearHotkey(slot: HotkeySlot) {
+  if (capturingSlot === slot) exitHotkeyCapture(false);
+  if (slot === "keyboard") currentSettings.keyboardHotkey = "";
+  else currentSettings.mouseHotkey = "";
+  renderHotkey(slot);
+  try {
+    await invoke("save_settings", { settings: currentSettings });
+  } catch (e) {
+    console.error(`Failed to clear ${slot} hotkey:`, e);
+  }
+}
+
+kbHotkeyBtn.addEventListener("click", (e) => {
   e.stopPropagation();
-  if (!isCapturingHotkey) enterHotkeyCapture();
+  if (capturingSlot !== "keyboard") enterHotkeyCapture("keyboard");
+});
+
+mouseHotkeyBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (capturingSlot !== "mouse") enterHotkeyCapture("mouse");
+});
+
+kbHotkeyClear.addEventListener("click", (e) => {
+  e.stopPropagation();
+  clearHotkey("keyboard");
+});
+
+mouseHotkeyClear.addEventListener("click", (e) => {
+  e.stopPropagation();
+  clearHotkey("mouse");
 });
 
 window.addEventListener(
   "keydown",
   (e) => {
-    if (!isCapturingHotkey) return;
+    if (!capturingSlot) return;
     e.preventDefault();
     e.stopPropagation();
 
@@ -312,11 +378,16 @@ window.addEventListener(
       return;
     }
 
+    // Mouse-slot capture only commits on mousedown; modifier-only keypresses
+    // are tolerated so the user can hold Ctrl/Shift while clicking the side
+    // button. Other keypresses just get swallowed.
+    if (capturingSlot === "mouse") return;
+
     const main = mainKeyName(e);
     if (!main) return; // modifier-only press; wait for the actual key
 
     const tokens = [...modifierTokens(e), main];
-    commitHotkey(tokens.join("+"));
+    commitHotkey("keyboard", tokens.join("+"));
   },
   { capture: true }
 );
@@ -324,20 +395,27 @@ window.addEventListener(
 window.addEventListener(
   "mousedown",
   (e) => {
-    if (!isCapturingHotkey) return;
+    if (!capturingSlot) return;
     // Block all clicks while capturing so the user can't accidentally trigger
     // other UI.
     e.preventDefault();
     e.stopPropagation();
 
+    if (e.button === 2) {
+      exitHotkeyCapture(false);
+      return;
+    }
+
+    // Keyboard-slot capture ignores all mouse clicks (left-click would just
+    // be background noise; a side-button press shouldn't bind to this slot).
+    if (capturingSlot === "keyboard") return;
+
     const button = mouseButtonName(e.button);
     if (button) {
       const tokens = [...modifierTokens(e), button];
-      commitHotkey(tokens.join("+"));
-    } else if (e.button === 2) {
-      exitHotkeyCapture(false);
+      commitHotkey("mouse", tokens.join("+"));
     }
-    // Left-click during capture: ignore (button is unbindable).
+    // Left-click during mouse capture: ignore (button is unbindable).
   },
   { capture: true }
 );
@@ -345,7 +423,7 @@ window.addEventListener(
 window.addEventListener(
   "contextmenu",
   (e) => {
-    if (isCapturingHotkey) e.preventDefault();
+    if (capturingSlot) e.preventDefault();
   },
   { capture: true }
 );
