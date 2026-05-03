@@ -18,11 +18,18 @@ pub fn paste_text(text: &str) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        use enigo::{Enigo, Keyboard, Settings, Key, Direction};
+        // Use Shift+Insert (Windows' original paste shortcut) instead of
+        // Ctrl+V. Terminals like Windows Terminal handle Shift+Insert as
+        // plain-text paste at the terminal layer, before any TUI app
+        // (Claude Code, vim, etc.) gets a chance to intercept Ctrl+V for
+        // image paste or other custom handling. Shift+Insert is also
+        // honored everywhere else Ctrl+V is — Notepad, VS Code, browsers,
+        // Office, etc.
+        use enigo::{Direction, Enigo, Key, Keyboard, Settings};
         let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
-        enigo.key(Key::Control, Direction::Press).map_err(|e| e.to_string())?;
-        enigo.key(Key::Unicode('v'), Direction::Click).map_err(|e| e.to_string())?;
-        enigo.key(Key::Control, Direction::Release).map_err(|e| e.to_string())?;
+        enigo.key(Key::Shift, Direction::Press).map_err(|e| e.to_string())?;
+        enigo.key(Key::Insert, Direction::Click).map_err(|e| e.to_string())?;
+        enigo.key(Key::Shift, Direction::Release).map_err(|e| e.to_string())?;
     }
 
     Ok(())
