@@ -42,6 +42,25 @@ pub struct AudioRecorder {
     stream: Option<SendStream>,
     source_sample_rate: u32,
     source_channels: u16,
+    device_name: String,
+    stream_error: Arc<Mutex<Option<String>>>,
+}
+
+/// Extra guidance appended to capture errors when the device looks like a
+/// Bluetooth headset, whose microphone only becomes live a second or two
+/// after the stream opens (Windows has to switch it into hands-free mode).
+fn bluetooth_hint(device_name: &str) -> &'static str {
+    let n = device_name.to_lowercase();
+    if n.contains("airpods")
+        || n.contains("headset")
+        || n.contains("hands-free")
+        || n.contains("buds")
+        || n.contains("bluetooth")
+    {
+        " Bluetooth headsets take a moment to switch their microphone on — wait for the indicator to turn red before speaking."
+    } else {
+        ""
+    }
 }
 
 impl AudioRecorder {
@@ -51,12 +70,15 @@ impl AudioRecorder {
             stream: None,
             source_sample_rate: 48000,
             source_channels: 1,
+            device_name: String::new(),
+            stream_error: Arc::new(Mutex::new(None)),
         }
     }
 
     pub fn start(&mut self, mic_name: &str) -> Result<(), String> {
         // Clear any leftover samples from previous recording
         self.samples.lock().unwrap().clear();
+        *self.stream_error.lock().unwrap() = None;
 
         let host = cpal::default_host();
 
@@ -69,6 +91,8 @@ impl AudioRecorder {
                 .find(|d| d.name().map(|n| n == mic_name).unwrap_or(false))
                 .ok_or(format!("Microphone '{}' not found", mic_name))?
         };
+
+        self.device_name = device.name().unwrap_or_else(|_| mic_name.to_string());
 
         // Use the device's default config instead of forcing 16kHz
         let default_config = device
@@ -97,8 +121,12 @@ impl AudioRecorder {
                     let mut buf = samples.lock().unwrap();
                     buf.extend_from_slice(data);
                 },
-                |err| {
-                    eprintln!("[Typr] Audio stream error: {}", err);
+                {
+                    let error_slot = self.stream_error.clone();
+                    move |err| {
+                        eprintln!("[Typr] Audio stream error: {}", err);
+                        *error_slot.lock().unwrap() = Some(err.to_string());
+                    }
                 },
                 None,
             )
@@ -106,6 +134,41 @@ impl AudioRecorder {
 
         stream.play().map_err(|e| e.to_string())?;
         self.stream = Some(SendStream(stream));
+
+        // Wait for the device to actually deliver audio before reporting the
+        // recording as started. Bluetooth headsets (AirPods etc.) need 1-2s
+        // to switch into hands-free mode after the stream opens; returning
+        // early would show "Recording" while the mic is still dead. The
+        // overlay turns red only after this returns, so red = mic is live.
+        let wait_start = std::time::Instant::now();
+        loop {
+            if !self.samples.lock().unwrap().is_empty() {
+                println!(
+                    "[Typr] Mic '{}' live after {}ms",
+                    self.device_name,
+                    wait_start.elapsed().as_millis()
+                );
+                break;
+            }
+            if let Some(err) = self.stream_error.lock().unwrap().clone() {
+                self.stream = None;
+                return Err(format!(
+                    "Microphone '{}' failed to start: {}.{}",
+                    self.device_name,
+                    err,
+                    bluetooth_hint(&self.device_name)
+                ));
+            }
+            if wait_start.elapsed() > std::time::Duration::from_millis(2500) {
+                eprintln!(
+                    "[Typr] Warning: no audio from '{}' after 2.5s — continuing anyway",
+                    self.device_name
+                );
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+
         println!("[Typr] Audio recording started");
         Ok(())
     }
@@ -116,10 +179,19 @@ impl AudioRecorder {
 
         let samples = self.samples.lock().unwrap();
         if samples.is_empty() {
-            return Err(
-                "No audio captured. Hold the hotkey while speaking and verify the selected microphone is receiving input."
-                    .to_string(),
-            );
+            if let Some(err) = self.stream_error.lock().unwrap().clone() {
+                return Err(format!(
+                    "Microphone '{}' stream error: {}.{}",
+                    self.device_name,
+                    err,
+                    bluetooth_hint(&self.device_name)
+                ));
+            }
+            return Err(format!(
+                "No audio captured from '{}'.{} Hold the hotkey while speaking and verify the microphone works in Windows sound settings.",
+                self.device_name,
+                bluetooth_hint(&self.device_name)
+            ));
         }
 
         println!("[Typr] Captured {} raw samples", samples.len());
@@ -133,6 +205,19 @@ impl AudioRecorder {
         } else {
             samples.clone()
         };
+
+        // Silence gate: Whisper hallucinates text ("The quick brown fox...",
+        // "Thank you.", etc.) when given silent or near-silent audio, so bail
+        // out before transcription if there's no speech-level signal.
+        let peak = mono.iter().fold(0.0_f32, |acc, s| acc.max(s.abs()));
+        let rms = (mono.iter().map(|s| s * s).sum::<f32>() / mono.len() as f32).sqrt();
+        println!("[Typr] Audio level: peak={:.4}, rms={:.4}", peak, rms);
+        if peak < 0.02 && rms < 0.005 {
+            return Err(format!(
+                "No speech detected — the recording was silent.{}",
+                bluetooth_hint(&self.device_name)
+            ));
+        }
 
         // Downsample to 16kHz for whisper.cpp
         let resampled = resample(&mono, self.source_sample_rate, 16000);

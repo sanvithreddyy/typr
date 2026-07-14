@@ -2,11 +2,14 @@
 
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 use typr_lib::audio;
 use typr_lib::downloader;
+use typr_lib::history;
 use typr_lib::hotkey::{self, Hotkey};
 #[cfg(windows)]
 use typr_lib::mouse_hook::{self, ButtonState};
@@ -62,6 +65,21 @@ fn list_microphones() -> Vec<audio::MicDevice> {
 }
 
 #[tauri::command]
+fn get_history(state: State<AppState>) -> Vec<history::HistoryEntry> {
+    history::load(&state.app_dir)
+}
+
+#[tauri::command]
+fn delete_history_entry(state: State<AppState>, id: u64) -> Result<(), String> {
+    history::delete(&state.app_dir, id)
+}
+
+#[tauri::command]
+fn clear_history(state: State<AppState>) -> Result<(), String> {
+    history::clear(&state.app_dir)
+}
+
+#[tauri::command]
 fn get_recording_state(state: State<AppState>) -> RecordingState {
     state.recorder.get_state()
 }
@@ -97,6 +115,16 @@ async fn toggle_recording(
     do_toggle_recording(&app, &state, source).await
 }
 
+/// Open the TLS connection to the transcription API while the user is still
+/// speaking, so the request after they stop doesn't pay the handshake cost.
+fn prewarm_engine(engine: &str) {
+    match engine {
+        "openrouter" => typr_lib::http::prewarm("https://openrouter.ai/api/v1/models"),
+        "groq" => typr_lib::http::prewarm("https://api.groq.com/openai/v1/models"),
+        _ => {}
+    }
+}
+
 /// Shared logic for toggle recording, used by both the Tauri command and hotkey handler.
 async fn do_toggle_recording(
     app: &tauri::AppHandle,
@@ -106,7 +134,11 @@ async fn do_toggle_recording(
     let current_state = state.recorder.get_state();
     match current_state {
         RecordingState::Ready => {
-            let mic = state.settings.lock().unwrap().microphone.clone();
+            let (mic, engine) = {
+                let s = state.settings.lock().unwrap();
+                (s.microphone.clone(), s.engine.clone())
+            };
+            prewarm_engine(&engine);
             state.recorder.start_recording(app, &mic, source)?;
             Ok("recording".to_string())
         }
@@ -135,15 +167,23 @@ fn handle_hotkey_event(handle: tauri::AppHandle, source: TriggerSource, pressed:
                     let s = h.state::<AppState>();
                     match do_toggle_recording(&h, s.inner(), source).await {
                         Ok(result) => println!("[Typr] Toggle result: {}", result),
-                        Err(e) => eprintln!("[Typr] Toggle error: {}", e),
+                        Err(e) => {
+                            eprintln!("[Typr] Toggle error: {}", e);
+                            let _ = h.emit("typr-error", e);
+                        }
                     }
                 });
             }
             "push-to-talk" => {
                 if state.recorder.get_state() == RecordingState::Ready {
-                    let mic = state.settings.lock().unwrap().microphone.clone();
+                    let (mic, engine) = {
+                        let s = state.settings.lock().unwrap();
+                        (s.microphone.clone(), s.engine.clone())
+                    };
+                    prewarm_engine(&engine);
                     if let Err(e) = state.recorder.start_recording(&handle, &mic, source) {
                         eprintln!("[Typr] PTT start error: {}", e);
+                        let _ = handle.emit("typr-error", e);
                     }
                 }
             }
@@ -161,6 +201,7 @@ fn handle_hotkey_event(handle: tauri::AppHandle, source: TriggerSource, pressed:
                     .await
                 {
                     eprintln!("[Typr] PTT transcription error: {}", e);
+                    let _ = h.emit("typr-error", e);
                 }
             }
         });
@@ -229,6 +270,14 @@ fn register_hotkeys(
     Ok(())
 }
 
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
 fn main() {
     let app_dir = get_app_dir();
     let settings = Settings::load(&app_dir);
@@ -247,12 +296,55 @@ fn main() {
             get_settings,
             save_settings,
             list_microphones,
+            get_history,
+            delete_history_entry,
+            clear_history,
             get_recording_state,
             check_model_downloaded,
             download_model,
             toggle_recording,
         ])
+        .on_window_event(|window, event| {
+            // Closing the settings window hides it to the system tray so the
+            // hotkeys keep working in the background. Quitting for real is
+            // done via the tray menu.
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .setup(move |app| {
+            // System tray: left-click reopens settings, menu has Open/Quit.
+            let open_item = MenuItem::with_id(app, "open", "Open Typr", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit Typr", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[&open_item, &quit_item])?;
+
+            let mut tray = TrayIconBuilder::with_id("typr-tray")
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .tooltip("Typr")
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "open" => show_main_window(app),
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        show_main_window(tray.app_handle());
+                    }
+                });
+            if let Some(icon) = app.default_window_icon() {
+                tray = tray.icon(icon.clone());
+            }
+            tray.build(app)?;
+
             // Create the overlay window (small mic icon, top-right, always on top)
             let monitor = app.primary_monitor().ok().flatten();
             let (x, y) = if let Some(m) = monitor {

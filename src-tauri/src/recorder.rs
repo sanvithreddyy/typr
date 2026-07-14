@@ -143,6 +143,9 @@ impl Recorder {
             let cleaned = cleanup_text(&raw_text);
             if !cleaned.is_empty() {
                 paste_text(&cleaned)?;
+                if let Err(e) = crate::history::add(app_dir, &cleaned, &settings.engine) {
+                    eprintln!("[Typr] Failed to save history entry: {}", e);
+                }
             }
 
             Ok(cleaned)

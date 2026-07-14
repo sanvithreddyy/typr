@@ -83,8 +83,7 @@ pub async fn transcribe_openrouter(
         ]
     });
 
-    let client = reqwest::Client::new();
-    let response = client
+    let response = crate::http::client()
         .post(OPENROUTER_URL)
         .header("Authorization", format!("Bearer {}", api_key.trim()))
         .header("HTTP-Referer", OPENROUTER_REFERER)

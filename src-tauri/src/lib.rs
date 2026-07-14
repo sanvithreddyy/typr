@@ -1,5 +1,7 @@
 pub mod settings;
 pub mod audio;
+pub mod http;
+pub mod history;
 pub mod transcribe_local;
 pub mod transcribe_groq;
 pub mod transcribe_openrouter;
