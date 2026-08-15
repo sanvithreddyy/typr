@@ -4,8 +4,9 @@ use std::path::PathBuf;
 
 use crate::hotkey;
 
-pub const DEFAULT_OPENROUTER_MODEL: &str = "google/gemini-3.1-flash-lite-preview";
+pub const DEFAULT_OPENROUTER_MODEL: &str = "openai/whisper-large-v3";
 const LEGACY_OPENROUTER_MODEL: &str = "openai/gpt-audio-mini";
+const PREVIOUS_OPENROUTER_MODEL: &str = "google/gemini-3.1-flash-lite-preview";
 const DEFAULT_KEYBOARD_HOTKEY: &str = "CmdOrCtrl+Shift+Space";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -67,6 +68,7 @@ impl Settings {
 
         if self.openrouter_model.trim().is_empty()
             || self.openrouter_model == LEGACY_OPENROUTER_MODEL
+            || self.openrouter_model == PREVIOUS_OPENROUTER_MODEL
         {
             self.openrouter_model = DEFAULT_OPENROUTER_MODEL.to_string();
         }
@@ -169,6 +171,17 @@ mod tests {
         assert_eq!(settings.openrouter_model, DEFAULT_OPENROUTER_MODEL);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_previous_openrouter_default_is_migrated_to_whisper() {
+        let settings = Settings {
+            openrouter_model: PREVIOUS_OPENROUTER_MODEL.to_string(),
+            ..Settings::default()
+        }
+        .normalized();
+
+        assert_eq!(settings.openrouter_model, DEFAULT_OPENROUTER_MODEL);
     }
 
     #[test]

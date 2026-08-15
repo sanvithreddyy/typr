@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::menu::MenuItem;
+use tauri::{AppHandle, Emitter};
 
 use crate::audio::AudioRecorder;
 use crate::cleanup::cleanup_text;
@@ -26,15 +27,11 @@ pub enum TriggerSource {
     Mouse,
 }
 
-fn update_overlay(app: &AppHandle, state: &RecordingState) {
-    if let Some(overlay) = app.get_webview_window("overlay") {
-        let class = match state {
-            RecordingState::Ready => "mic",
-            RecordingState::Recording => "mic recording",
-            RecordingState::Transcribing => "mic transcribing",
-        };
-        let js = format!("document.getElementById('mic').className = '{}';", class);
-        let _ = overlay.eval(&js);
+fn status_text(state: &RecordingState) -> (&'static str, &'static str) {
+    match state {
+        RecordingState::Ready => ("Status: Ready", "Typr — Ready"),
+        RecordingState::Recording => ("Status: Recording…", "Typr — Recording"),
+        RecordingState::Transcribing => ("Status: Transcribing…", "Typr — Transcribing"),
     }
 }
 
@@ -42,6 +39,7 @@ pub struct Recorder {
     state: Arc<Mutex<RecordingState>>,
     audio_recorder: Arc<Mutex<AudioRecorder>>,
     active_trigger: Arc<Mutex<Option<TriggerSource>>>,
+    tray_status_item: Arc<Mutex<Option<MenuItem<tauri::Wry>>>>,
 }
 
 impl Recorder {
@@ -50,7 +48,12 @@ impl Recorder {
             state: Arc::new(Mutex::new(RecordingState::Ready)),
             audio_recorder: Arc::new(Mutex::new(AudioRecorder::new())),
             active_trigger: Arc::new(Mutex::new(None)),
+            tray_status_item: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub fn set_tray_status_item(&self, item: MenuItem<tauri::Wry>) {
+        *self.tray_status_item.lock().unwrap() = Some(item);
     }
 
     pub fn get_state(&self) -> RecordingState {
@@ -65,7 +68,17 @@ impl Recorder {
     fn set_state(&self, app: &AppHandle, next: RecordingState) {
         *self.state.lock().unwrap() = next.clone();
         let _ = app.emit("recording-state", next.clone());
-        update_overlay(app, &next);
+        self.update_tray_status(app, &next);
+    }
+
+    fn update_tray_status(&self, app: &AppHandle, state: &RecordingState) {
+        let (menu_text, tooltip) = status_text(state);
+        if let Some(item) = self.tray_status_item.lock().unwrap().as_ref() {
+            let _ = item.set_text(menu_text);
+        }
+        if let Some(tray) = app.tray_by_id("typr-tray") {
+            let _ = tray.set_tooltip(Some(tooltip));
+        }
     }
 
     pub fn start_recording(
@@ -85,7 +98,7 @@ impl Recorder {
         *state = RecordingState::Recording;
         *self.active_trigger.lock().unwrap() = Some(source);
         let _ = app.emit("recording-state", RecordingState::Recording);
-        update_overlay(app, &RecordingState::Recording);
+        self.update_tray_status(app, &RecordingState::Recording);
         Ok(())
     }
 
@@ -167,5 +180,18 @@ mod tests {
     fn test_initial_state_is_ready() {
         let recorder = Recorder::new();
         assert_eq!(recorder.get_state(), RecordingState::Ready);
+    }
+
+    #[test]
+    fn test_tray_status_text() {
+        assert_eq!(status_text(&RecordingState::Ready).0, "Status: Ready");
+        assert_eq!(
+            status_text(&RecordingState::Recording).0,
+            "Status: Recording…"
+        );
+        assert_eq!(
+            status_text(&RecordingState::Transcribing).0,
+            "Status: Transcribing…"
+        );
     }
 }

@@ -139,7 +139,8 @@ impl AudioRecorder {
         // recording as started. Bluetooth headsets (AirPods etc.) need 1-2s
         // to switch into hands-free mode after the stream opens; returning
         // early would show "Recording" while the mic is still dead. The
-        // overlay turns red only after this returns, so red = mic is live.
+        // the app reports Recording only after this returns, so that state
+        // means the microphone stream is live.
         let wait_start = std::time::Instant::now();
         loop {
             if !self.samples.lock().unwrap().is_empty() {
@@ -211,11 +212,16 @@ impl AudioRecorder {
         // out before transcription if there's no speech-level signal.
         let peak = mono.iter().fold(0.0_f32, |acc, s| acc.max(s.abs()));
         let rms = (mono.iter().map(|s| s * s).sum::<f32>() / mono.len() as f32).sqrt();
+        let duration_seconds = mono.len() as f32 / self.source_sample_rate as f32;
         println!("[Typr] Audio level: peak={:.4}, rms={:.4}", peak, rms);
         if peak < 0.02 && rms < 0.005 {
             return Err(format!(
-                "No speech detected — the recording was silent.{}",
-                bluetooth_hint(&self.device_name)
+                "No speech detected from '{}' ({:.1}s captured, peak {:.3}, RMS {:.3}). Keep the hotkey held while speaking, or switch Recording Mode to Toggle.{}",
+                self.device_name,
+                duration_seconds,
+                peak,
+                rms,
+                bluetooth_hint(&self.device_name),
             ));
         }
 

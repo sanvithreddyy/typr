@@ -2,7 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-const DEFAULT_OPENROUTER_MODEL = "google/gemini-3.1-flash-lite-preview";
+const DEFAULT_OPENROUTER_MODEL = "openai/whisper-large-v3";
+const IS_MAC = /Mac/.test(navigator.platform || navigator.userAgent);
 
 interface Settings {
   microphone: string;
@@ -161,7 +162,31 @@ async function loadSettings() {
 }
 
 function displayHotkey(hotkey: string): string {
-  return hotkey.replace("CmdOrCtrl", "Ctrl");
+  if (!IS_MAC) return hotkey.replace("CmdOrCtrl", "Ctrl");
+
+  return hotkey
+    .split("+")
+    .map((token) => {
+      switch (token) {
+        case "CmdOrCtrl":
+        case "Cmd":
+        case "Command":
+        case "Super":
+        case "Win":
+          return "⌘";
+        case "Ctrl":
+        case "Control":
+          return "⌃";
+        case "Alt":
+        case "Option":
+          return "⌥";
+        case "Shift":
+          return "⇧";
+        default:
+          return token;
+      }
+    })
+    .join(" ");
 }
 
 function renderHotkey(slot: HotkeySlot) {
@@ -474,6 +499,7 @@ historyClearBtn.addEventListener("click", async () => {
 type HotkeySlot = "keyboard" | "mouse";
 
 let capturingSlot: HotkeySlot | null = null;
+const heldModifiers = new Set<string>();
 
 function btnFor(slot: HotkeySlot): HTMLElement {
   return slot === "keyboard" ? kbHotkeyBtn : mouseHotkeyBtn;
@@ -493,6 +519,7 @@ function enterHotkeyCapture(slot: HotkeySlot) {
   // If another slot is mid-capture, cancel it first.
   if (capturingSlot && capturingSlot !== slot) exitHotkeyCapture(false);
   capturingSlot = slot;
+  heldModifiers.clear();
   const target = textFor(slot);
   target.textContent = promptFor(slot);
   target.classList.remove("hotkey-empty");
@@ -503,17 +530,32 @@ function exitHotkeyCapture(committed: boolean) {
   if (!capturingSlot) return;
   const slot = capturingSlot;
   capturingSlot = null;
+  heldModifiers.clear();
   btnFor(slot).classList.remove("capturing");
   if (!committed) renderHotkey(slot);
 }
 
+const MODIFIER_ORDER = ["Cmd", "Super", "Ctrl", "Alt", "Shift"];
+
+function modifierTokenForKey(e: KeyboardEvent): string | null {
+  if (e.key === "Meta" || e.key === "OS" || e.code.startsWith("Meta")) {
+    return IS_MAC ? "Cmd" : "Super";
+  }
+  if (e.key === "Control" || e.code.startsWith("Control")) return "Ctrl";
+  if (e.key === "Alt" || e.code.startsWith("Alt")) return "Alt";
+  if (e.key === "Shift" || e.code.startsWith("Shift")) return "Shift";
+  return null;
+}
+
 function modifierTokens(e: KeyboardEvent | MouseEvent): string[] {
-  const mods: string[] = [];
-  if (e.ctrlKey) mods.push("Ctrl");
-  if (e.shiftKey) mods.push("Shift");
-  if (e.altKey) mods.push("Alt");
-  if (e.metaKey) mods.push("Win");
-  return mods;
+  const mods = new Set(heldModifiers);
+  if (e.metaKey) mods.add(IS_MAC ? "Cmd" : "Super");
+  if (e.ctrlKey) mods.add("Ctrl");
+  if (e.altKey) mods.add("Alt");
+  if (e.shiftKey) mods.add("Shift");
+  return [...mods].sort(
+    (a, b) => MODIFIER_ORDER.indexOf(a) - MODIFIER_ORDER.indexOf(b)
+  );
 }
 
 function mainKeyName(e: KeyboardEvent): string | null {
@@ -593,6 +635,15 @@ window.addEventListener(
       return;
     }
 
+    const modifier = modifierTokenForKey(e);
+    if (modifier) {
+      heldModifiers.add(modifier);
+      textFor(capturingSlot).textContent = `${displayHotkey(
+        modifierTokens(e).join("+")
+      )} …`;
+      return;
+    }
+
     // Mouse-slot capture only commits on mousedown; modifier-only keypresses
     // are tolerated so the user can hold Ctrl/Shift while clicking the side
     // button. Other keypresses just get swallowed.
@@ -603,6 +654,16 @@ window.addEventListener(
 
     const tokens = [...modifierTokens(e), main];
     commitHotkey("keyboard", tokens.join("+"));
+  },
+  { capture: true }
+);
+
+window.addEventListener(
+  "keyup",
+  (e) => {
+    if (!capturingSlot) return;
+    const modifier = modifierTokenForKey(e);
+    if (modifier) heldModifiers.delete(modifier);
   },
   { capture: true }
 );

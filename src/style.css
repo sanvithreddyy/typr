@@ -277,9 +277,9 @@ body {
 }
 
 .setting-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 280px);
   align-items: flex-start;
-  justify-content: space-between;
   gap: 32px;
   padding: 16px 0;
   border-bottom: 1px solid var(--border);
@@ -294,8 +294,7 @@ body {
 }
 
 .setting-label {
-  flex-shrink: 0;
-  min-width: 200px;
+  min-width: 0;
 }
 
 .label-text {
@@ -314,9 +313,9 @@ body {
 }
 
 .setting-control {
-  flex: 1;
   display: flex;
   justify-content: flex-end;
+  width: 100%;
   min-width: 0;
 }
 
@@ -720,4 +719,26 @@ mark {
 ::selection {
   background: var(--accent-subtle);
   color: var(--text);
+}
+
+@media (max-width: 800px) {
+  .content-section {
+    padding: 24px;
+  }
+
+  .setting-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .setting-control {
+    justify-content: flex-start;
+  }
+
+  select,
+  input[type="password"],
+  input[type="text"],
+  .model-row {
+    max-width: none;
+  }
 }

@@ -1,10 +1,11 @@
 use base64::Engine;
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::Path;
 
 use crate::settings::DEFAULT_OPENROUTER_MODEL;
 
-const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
+const OPENROUTER_CHAT_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
+const OPENROUTER_TRANSCRIPTIONS_URL: &str = "https://openrouter.ai/api/v1/audio/transcriptions";
 const OPENROUTER_REFERER: &str = "https://github.com/sanvithreddyy/typr";
 const OPENROUTER_TITLE: &str = "Typr";
 const TRANSCRIPTION_SYSTEM_PROMPT: &str =
@@ -12,13 +13,21 @@ const TRANSCRIPTION_SYSTEM_PROMPT: &str =
 const TRANSCRIPTION_PROMPT: &str =
     "Transcribe the attached audio and return the exact spoken words.";
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum OpenRouterApi {
+    ChatCompletions,
+    Transcriptions,
+}
+
 pub async fn transcribe_openrouter(
     api_key: &str,
     model: &str,
-    audio_path: &PathBuf,
+    audio_path: &Path,
 ) -> Result<String, String> {
     if api_key.trim().is_empty() {
-        return Err("OpenRouter API key not set. Please enter your API key in settings.".to_string());
+        return Err(
+            "OpenRouter API key not set. Please enter your API key in settings.".to_string(),
+        );
     }
 
     let model = if model.trim().is_empty() {
@@ -27,11 +36,85 @@ pub async fn transcribe_openrouter(
         model.trim()
     };
 
-    let audio_bytes = std::fs::read(audio_path)
-        .map_err(|e| format!("Failed to read audio file: {}", e))?;
+    let audio_bytes =
+        std::fs::read(audio_path).map_err(|e| format!("Failed to read audio file: {}", e))?;
     let audio_base64 = base64::engine::general_purpose::STANDARD.encode(audio_bytes);
 
-    let request_body = json!({
+    let api = api_for_model(model);
+    let response = match api {
+        OpenRouterApi::Transcriptions => {
+            send_transcription_request(api_key, model, &audio_base64).await?
+        }
+        OpenRouterApi::ChatCompletions => send_chat_request(api_key, model, &audio_base64).await?,
+    };
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("OpenRouter API error ({}): {}", status, body));
+    }
+
+    let json: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse OpenRouter response: {}", e))?;
+
+    match api {
+        OpenRouterApi::Transcriptions => extract_audio_transcript(&json),
+        OpenRouterApi::ChatCompletions => extract_chat_transcript(&json),
+    }
+}
+
+fn api_for_model(model: &str) -> OpenRouterApi {
+    if model.starts_with("openai/whisper-") {
+        OpenRouterApi::Transcriptions
+    } else {
+        OpenRouterApi::ChatCompletions
+    }
+}
+
+async fn send_transcription_request(
+    api_key: &str,
+    model: &str,
+    audio_base64: &str,
+) -> Result<reqwest::Response, String> {
+    send_request(
+        api_key,
+        OPENROUTER_TRANSCRIPTIONS_URL,
+        transcription_request_body(model, audio_base64),
+    )
+    .await
+}
+
+fn transcription_request_body(model: &str, audio_base64: &str) -> serde_json::Value {
+    json!({
+        "model": model,
+        "input_audio": {
+            "data": audio_base64,
+            "format": "wav"
+        },
+        "temperature": 0,
+        "provider": {
+            "require_parameters": true
+        }
+    })
+}
+
+async fn send_chat_request(
+    api_key: &str,
+    model: &str,
+    audio_base64: &str,
+) -> Result<reqwest::Response, String> {
+    send_request(
+        api_key,
+        OPENROUTER_CHAT_URL,
+        chat_request_body(model, audio_base64),
+    )
+    .await
+}
+
+fn chat_request_body(model: &str, audio_base64: &str) -> serde_json::Value {
+    json!({
         "model": model,
         "temperature": 0,
         "stream": false,
@@ -81,33 +164,35 @@ pub async fn transcribe_openrouter(
                 ]
             }
         ]
-    });
+    })
+}
 
-    let response = crate::http::client()
-        .post(OPENROUTER_URL)
+async fn send_request(
+    api_key: &str,
+    url: &str,
+    request_body: serde_json::Value,
+) -> Result<reqwest::Response, String> {
+    crate::http::client()
+        .post(url)
         .header("Authorization", format!("Bearer {}", api_key.trim()))
         .header("HTTP-Referer", OPENROUTER_REFERER)
         .header("X-Title", OPENROUTER_TITLE)
         .json(&request_body)
         .send()
         .await
-        .map_err(|e| format!("OpenRouter API request failed: {}", e))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!("OpenRouter API error ({}): {}", status, body));
-    }
-
-    let json: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse OpenRouter response: {}", e))?;
-
-    extract_transcript(&json)
+        .map_err(|e| format!("OpenRouter API request failed: {}", e))
 }
 
-fn extract_transcript(json: &serde_json::Value) -> Result<String, String> {
+fn extract_audio_transcript(json: &serde_json::Value) -> Result<String, String> {
+    json["text"]
+        .as_str()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "No transcript text found in OpenRouter response".to_string())
+}
+
+fn extract_chat_transcript(json: &serde_json::Value) -> Result<String, String> {
     let content = &json["choices"][0]["message"]["content"];
 
     if let Some(text) = content.as_str() {
@@ -172,8 +257,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_api_key() {
-        let path = PathBuf::from("/tmp/test.wav");
-        let result = transcribe_openrouter("", DEFAULT_OPENROUTER_MODEL, &path).await;
+        let path = Path::new("/tmp/test.wav");
+        let result = transcribe_openrouter("", DEFAULT_OPENROUTER_MODEL, path).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("API key not set"));
     }
@@ -190,7 +275,7 @@ mod tests {
             ]
         });
 
-        assert_eq!(extract_transcript(&json).unwrap(), "hello world");
+        assert_eq!(extract_chat_transcript(&json).unwrap(), "hello world");
     }
 
     #[test]
@@ -207,7 +292,7 @@ mod tests {
             ]
         });
 
-        assert_eq!(extract_transcript(&json).unwrap(), "hello world");
+        assert_eq!(extract_chat_transcript(&json).unwrap(), "hello world");
     }
 
     #[test]
@@ -222,6 +307,43 @@ mod tests {
             ]
         });
 
-        assert_eq!(extract_transcript(&json).unwrap(), "hello world");
+        assert_eq!(extract_chat_transcript(&json).unwrap(), "hello world");
+    }
+
+    #[test]
+    fn test_models_route_to_their_supported_api() {
+        assert_eq!(
+            api_for_model("openai/whisper-large-v3"),
+            OpenRouterApi::Transcriptions
+        );
+        assert_eq!(
+            api_for_model("openai/whisper-large-v3-turbo"),
+            OpenRouterApi::Transcriptions
+        );
+        assert_eq!(
+            api_for_model("google/gemini-3.1-flash-lite-preview"),
+            OpenRouterApi::ChatCompletions
+        );
+    }
+
+    #[test]
+    fn test_transcription_request_uses_openrouter_audio_contract() {
+        let body = transcription_request_body("openai/whisper-large-v3", "d2F2");
+        assert_eq!(body["model"], "openai/whisper-large-v3");
+        assert_eq!(body["input_audio"]["data"], "d2F2");
+        assert_eq!(body["input_audio"]["format"], "wav");
+        assert_eq!(body["temperature"], 0);
+    }
+
+    #[test]
+    fn test_extract_audio_transcript() {
+        let json = json!({ "text": " hello world " });
+        assert_eq!(extract_audio_transcript(&json).unwrap(), "hello world");
+    }
+
+    #[test]
+    fn test_extract_audio_transcript_rejects_empty_text() {
+        let json = json!({ "text": "  " });
+        assert!(extract_audio_transcript(&json).is_err());
     }
 }

@@ -2,9 +2,9 @@
 
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::TrayIconBuilder;
+use tauri::{Emitter, Manager, State};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 use typr_lib::audio;
@@ -316,75 +316,31 @@ fn main() {
             }
         })
         .setup(move |app| {
-            // System tray: left-click reopens settings, menu has Open/Quit.
+            // Menu bar: clicking shows live status and app actions.
+            let status_item =
+                MenuItem::with_id(app, "status", "Status: Ready", false, None::<&str>)?;
+            let separator = PredefinedMenuItem::separator(app)?;
             let open_item = MenuItem::with_id(app, "open", "Open Typr", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit Typr", true, None::<&str>)?;
-            let tray_menu = Menu::with_items(app, &[&open_item, &quit_item])?;
+            let tray_menu =
+                Menu::with_items(app, &[&status_item, &separator, &open_item, &quit_item])?;
 
             let mut tray = TrayIconBuilder::with_id("typr-tray")
                 .menu(&tray_menu)
-                .show_menu_on_left_click(false)
-                .tooltip("Typr")
+                .show_menu_on_left_click(true)
+                .tooltip("Typr — Ready")
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => show_main_window(app),
                     "quit" => app.exit(0),
                     _ => {}
-                })
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        show_main_window(tray.app_handle());
-                    }
                 });
             if let Some(icon) = app.default_window_icon() {
                 tray = tray.icon(icon.clone());
             }
             tray.build(app)?;
-
-            // Create the overlay window (small mic icon, top-right, always on top)
-            let monitor = app.primary_monitor().ok().flatten();
-            let (x, y) = if let Some(m) = monitor {
-                let size = m.size();
-                let scale = m.scale_factor();
-                let logical_w = size.width as f64 / scale;
-                ((logical_w - 60.0) as i32, 10_i32)
-            } else {
-                (1380, 10)
-            };
-
-            let overlay = WebviewWindowBuilder::new(
-                app,
-                "overlay",
-                WebviewUrl::App("src/overlay.html".into()),
-            )
-            .title("")
-            .inner_size(50.0, 50.0)
-            .position(x as f64, y as f64)
-            .resizable(false)
-            .decorations(false)
-            .transparent(true)
-            .always_on_top(true)
-            .skip_taskbar(true)
-            .focused(false)
-            .shadow(false)
-            .build();
-
-            match overlay {
-                Ok(w) => {
-                    // Mouse clicks pass through the overlay to windows beneath it,
-                    // so the indicator never blocks the close/maximize buttons it
-                    // hovers near.
-                    if let Err(e) = w.set_ignore_cursor_events(true) {
-                        eprintln!("[Typr] set_ignore_cursor_events failed: {}", e);
-                    }
-                    println!("[Typr] Overlay window created");
-                }
-                Err(e) => eprintln!("[Typr] Failed to create overlay: {}", e),
-            }
+            app.state::<AppState>()
+                .recorder
+                .set_tray_status_item(status_item);
 
             // Install the Win32 mouse hook + spawn a thread that forwards
             // matched mouse events into the same hotkey dispatch path the
