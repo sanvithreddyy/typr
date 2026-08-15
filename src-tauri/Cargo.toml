@@ -36,6 +36,9 @@ windows = { version = "0.58", features = [
     "Win32_Security_Cryptography",
 ] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3", default-features = false, features = ["libc", "NSRunningApplication", "NSWorkspace"] }
+
 # Disable PDB generation in dev builds — saves several GB of disk space.
 # Debug symbols make the binary larger and the linker writes a separate .pdb
 # per crate. Tauri dev mode doesn't need them for normal use.

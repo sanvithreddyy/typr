@@ -5,7 +5,7 @@ use tauri::{AppHandle, Emitter};
 
 use crate::audio::AudioRecorder;
 use crate::cleanup::cleanup_text;
-use crate::paste::paste_text;
+use crate::paste::{capture_paste_target, paste_text};
 use crate::settings::Settings;
 use crate::transcribe_local;
 use crate::transcribe_groq;
@@ -39,6 +39,7 @@ pub struct Recorder {
     state: Arc<Mutex<RecordingState>>,
     audio_recorder: Arc<Mutex<AudioRecorder>>,
     active_trigger: Arc<Mutex<Option<TriggerSource>>>,
+    paste_target_pid: Arc<Mutex<Option<i32>>>,
     tray_status_item: Arc<Mutex<Option<MenuItem<tauri::Wry>>>>,
 }
 
@@ -48,6 +49,7 @@ impl Recorder {
             state: Arc::new(Mutex::new(RecordingState::Ready)),
             audio_recorder: Arc::new(Mutex::new(AudioRecorder::new())),
             active_trigger: Arc::new(Mutex::new(None)),
+            paste_target_pid: Arc::new(Mutex::new(None)),
             tray_status_item: Arc::new(Mutex::new(None)),
         }
     }
@@ -92,11 +94,14 @@ impl Recorder {
             return Err("Already recording or transcribing".to_string());
         }
 
+        let paste_target_pid = capture_paste_target();
         let mut recorder = self.audio_recorder.lock().unwrap();
         recorder.start(mic_name)?;
 
         *state = RecordingState::Recording;
         *self.active_trigger.lock().unwrap() = Some(source);
+        *self.paste_target_pid.lock().unwrap() = paste_target_pid;
+        println!("[Typr] Captured paste target PID {:?}", paste_target_pid);
         let _ = app.emit("recording-state", RecordingState::Recording);
         self.update_tray_status(app, &RecordingState::Recording);
         Ok(())
@@ -155,10 +160,11 @@ impl Recorder {
 
             let cleaned = cleanup_text(&raw_text);
             if !cleaned.is_empty() {
-                paste_text(&cleaned)?;
                 if let Err(e) = crate::history::add(app_dir, &cleaned, &settings.engine) {
                     eprintln!("[Typr] Failed to save history entry: {}", e);
                 }
+                let target_pid = *self.paste_target_pid.lock().unwrap();
+                paste_text(&cleaned, target_pid)?;
             }
 
             Ok(cleaned)
@@ -167,6 +173,7 @@ impl Recorder {
 
         let _ = std::fs::remove_file(&temp_path);
         *self.active_trigger.lock().unwrap() = None;
+        *self.paste_target_pid.lock().unwrap() = None;
         self.set_state(app, RecordingState::Ready);
         result
     }
